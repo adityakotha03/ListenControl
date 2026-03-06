@@ -5,6 +5,7 @@ torch
 torchaudio
 transformers>=4.30.0
 imageio[video]>=2.31.0
+imageio-ffmpeg>=0.5.1
 smplx>=0.1.28
 chumpy>=0.70
 iopath>=0.1.10

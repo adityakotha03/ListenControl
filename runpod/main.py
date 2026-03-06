@@ -158,15 +158,66 @@ def save_comparison_video_with_audio(
             else:
                 raise
 
-    with imageio.get_writer(str(silent_video_path), fps=fps) as writer:
+    ffmpeg_path = shutil.which("ffmpeg")
+
+    def iter_combined_frames():
         for frame_idx in range(num_frames):
             frame_x = render_one_frame(x_seq[frame_idx])
             frame_y = render_one_frame(y_seq[frame_idx])
             frame_pred = render_one_frame(pred[frame_idx])
-            combined = np.concatenate([frame_x, frame_y, frame_pred], axis=1)
-            writer.append_data(combined)
+            yield np.concatenate([frame_x, frame_y, frame_pred], axis=1)
 
-    ffmpeg_path = shutil.which("ffmpeg")
+    # Prefer imageio writer. Some worker environments miss the plugin backend.
+    # Fall back to direct ffmpeg piping so jobs still succeed.
+    try:
+        with imageio.get_writer(str(silent_video_path), fps=fps) as writer:
+            for combined in iter_combined_frames():
+                writer.append_data(combined)
+    except ValueError as e:
+        message = str(e)
+        if "Could not find a backend" not in message:
+            raise
+        if ffmpeg_path is None:
+            raise RuntimeError(
+                "Failed to write MP4: imageio backend missing and ffmpeg binary not found."
+            ) from e
+        print("imageio MP4 backend missing. Falling back to direct ffmpeg encoding.")
+        width = int(image_size * 3)
+        height = int(image_size)
+        encode_cmd = [
+            ffmpeg_path,
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(silent_video_path),
+        ]
+        proc = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            assert proc.stdin is not None
+            for combined in iter_combined_frames():
+                proc.stdin.write(combined.tobytes())
+            proc.stdin.close()
+            _, stderr_data = proc.communicate()
+        except Exception:
+            proc.kill()
+            raise
+        if proc.returncode != 0:
+            err_text = stderr_data.decode("utf-8", errors="ignore")
+            raise RuntimeError(f"ffmpeg failed to encode video: {err_text}")
+
     if ffmpeg_path is None:
         print("ffmpeg not found. Returning silent comparison video.")
         return silent_video_path
