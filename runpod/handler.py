@@ -138,7 +138,7 @@ def handler(event):
 
     model_size = _normalize_model_size(inp.get("model_size", "128"))
     render_image_size = int(inp.get("image_size", 320))
-    render_dist = float(inp.get("render_dist", 0.62))
+    render_dist = float(inp.get("render_dist", 0.78))
     bg_color = _parse_bg_color(inp.get("bg_color"))
 
     region = os.environ.get("REGION_S3", "us-east-1")

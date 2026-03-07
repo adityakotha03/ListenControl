@@ -116,7 +116,7 @@ def save_comparison_video_with_audio(
     expression_dim=50,
     pose_dim=6,
     image_size=320,
-    render_dist=0.62,
+    render_dist=0.78,
     bg_color=(0.08, 0.08, 0.1),
 ):
     """
@@ -274,7 +274,7 @@ def run_pipeline(
     model_size="128",
     fps=25,
     image_size=320,
-    render_dist=0.62,
+    render_dist=0.78,
     bg_color=(0.08, 0.08, 0.1),
 ):
     """

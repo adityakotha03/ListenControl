@@ -16,7 +16,7 @@ Send a RunPod request with `input`:
 - `model_size` (optional): `"128"` or `"256"` (default: `"128"`)
 - `weights_path` (optional): custom weights path inside container
 - `image_size` (optional): panel size in pixels (default: `320`)
-- `render_dist` (optional): camera distance (default: `0.62`, lower = larger face)
+- `render_dist` (optional): camera distance (default: `0.78`, lower = larger face, higher = more zoomed out)
 - `bg_color` (optional): `[r, g, b]` floats in `[0,1]` (default: `[0.08, 0.08, 0.1]`)
 
 Backward-compatible input keys still accepted:
@@ -44,9 +44,9 @@ Backward-compatible input keys still accepted:
     "input_wav_uri": "s3://listencontrol/ex1.wav",
     "output_s3_uri": "s3://listencontrol/outputs/result_256.mp4",
     "model_size": "256",
-    "weights_path": "weights/best_model_dim_256_30.pt",
+    "weights_path": "weights/best_model_dim_256_15.pt",
     "image_size": 256,
-    "render_dist": 0.55,
+    "render_dist": 0.78,
     "bg_color": [0.08, 0.08, 0.1]
   }
 }
@@ -59,9 +59,9 @@ Backward-compatible input keys still accepted:
   "status": "success",
   "output_s3_uri": "s3://listencontrol/outputs/result_256.mp4",
   "model_size": "256",
-  "weights_path": "/app/weights/best_model_dim_256_30.pt",
+  "weights_path": "/app/weights/best_model_dim_256_15.pt",
   "image_size": 256,
-  "render_dist": 0.55,
+  "render_dist": 0.78,
   "bg_color": [0.08, 0.08, 0.1],
   "duration_sec": 42.73,
   "timings": {

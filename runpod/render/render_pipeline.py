@@ -133,7 +133,7 @@ class FlameRenderPipeline:
         self,
         vertices,
         image_size=1024,
-        dist=0.62,
+        dist=0.78,
         elev=0.0,
         azim=0.0,
         skin_color=(0.8, 0.6, 0.5),
