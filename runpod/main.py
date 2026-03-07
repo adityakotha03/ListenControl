@@ -118,6 +118,8 @@ def save_comparison_video_with_audio(
     image_size=320,
     render_dist=0.78,
     bg_color=(0.08, 0.08, 0.1),
+    render_scale=1.0,
+    video_crf=18,
 ):
     """
     Render original / ground-truth / predicted FLAME side-by-side video
@@ -132,6 +134,16 @@ def save_comparison_video_with_audio(
     pred = np.asarray(predicted_flame, dtype=np.float32)
     if x_seq.ndim != 2 or y_seq.ndim != 2 or pred.ndim != 2:
         raise ValueError("x_flame, y_flame, predicted_flame must be [T, D] arrays.")
+    image_size = int(image_size)
+    if image_size < 64:
+        raise ValueError("image_size must be >= 64.")
+    render_scale = float(render_scale)
+    if render_scale < 1.0:
+        raise ValueError("render_scale must be >= 1.0.")
+    video_crf = int(video_crf)
+    if video_crf < 0 or video_crf > 51:
+        raise ValueError("video_crf must be between 0 and 51 (lower means better quality).")
+    render_image_size = int(round(image_size * render_scale))
 
     def init_renderer(device_override=None):
         local_renderer = FlameRenderPipeline(device=device_override)
@@ -159,10 +171,27 @@ def save_comparison_video_with_audio(
         )
         image = renderer.render_vertices(
             vertices,
-            image_size=image_size,
+            image_size=render_image_size,
             dist=render_dist,
             bg_color=bg_color,
         )[0]
+        if render_image_size != image_size:
+            image_chw = image.permute(2, 0, 1).unsqueeze(0)
+            try:
+                image = F.interpolate(
+                    image_chw,
+                    size=(image_size, image_size),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True,
+                )[0].permute(1, 2, 0)
+            except TypeError:
+                image = F.interpolate(
+                    image_chw,
+                    size=(image_size, image_size),
+                    mode="bilinear",
+                    align_corners=False,
+                )[0].permute(1, 2, 0)
         return (image.detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
 
     # On some Windows setups, PyTorch3D installs without CUDA kernels.
@@ -188,10 +217,21 @@ def save_comparison_video_with_audio(
 
     # Prefer imageio writer. Some worker environments miss the plugin backend.
     # Fall back to direct ffmpeg piping so jobs still succeed.
-    try:
-        with imageio.get_writer(str(silent_video_path), fps=fps) as writer:
+    def write_with_imageio(use_quality_settings):
+        writer_kwargs = {"fps": fps}
+        if use_quality_settings:
+            writer_kwargs["codec"] = "libx264"
+            writer_kwargs["ffmpeg_params"] = ["-crf", str(video_crf), "-preset", "medium"]
+        with imageio.get_writer(str(silent_video_path), **writer_kwargs) as writer:
             for combined in iter_combined_frames():
                 writer.append_data(combined)
+
+    try:
+        try:
+            write_with_imageio(use_quality_settings=True)
+        except TypeError:
+            # Some backends do not accept ffmpeg-specific kwargs.
+            write_with_imageio(use_quality_settings=False)
     except ValueError as e:
         message = str(e)
         if "Could not find a backend" not in message:
@@ -219,6 +259,10 @@ def save_comparison_video_with_audio(
             "-an",
             "-c:v",
             "libx264",
+            "-crf",
+            str(video_crf),
+            "-preset",
+            "medium",
             "-pix_fmt",
             "yuv420p",
             str(silent_video_path),
@@ -276,6 +320,8 @@ def run_pipeline(
     image_size=320,
     render_dist=0.78,
     bg_color=(0.08, 0.08, 0.1),
+    render_scale=1.0,
+    video_crf=18,
 ):
     """
     Single entrypoint for serverless: predict + render comparison video.
@@ -313,6 +359,8 @@ def run_pipeline(
         image_size=image_size,
         render_dist=render_dist,
         bg_color=bg_color,
+        render_scale=render_scale,
+        video_crf=video_crf,
     )
     return video_path
 

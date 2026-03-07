@@ -140,6 +140,8 @@ def handler(event):
     render_image_size = int(inp.get("image_size", 320))
     render_dist = float(inp.get("render_dist", 0.78))
     bg_color = _parse_bg_color(inp.get("bg_color"))
+    render_scale = float(inp.get("render_scale", 1.0))
+    video_crf = int(inp.get("video_crf", 18))
 
     region = os.environ.get("REGION_S3", "us-east-1")
     access_key = os.environ.get("ACCESS_KEY_ID_S3")
@@ -193,6 +195,8 @@ def handler(event):
             image_size=render_image_size,
             render_dist=render_dist,
             bg_color=bg_color,
+            render_scale=render_scale,
+            video_crf=video_crf,
         )
         timings["pipeline_sec"] = round(time.perf_counter() - t1, 2)
         print(f"[{job_id}] Pipeline done in {timings['pipeline_sec']}s")
@@ -211,6 +215,8 @@ def handler(event):
             "image_size": render_image_size,
             "render_dist": render_dist,
             "bg_color": bg_color,
+            "render_scale": render_scale,
+            "video_crf": video_crf,
             "duration_sec": total,
             "timings": timings,
             "used_device": used_device,

@@ -18,6 +18,8 @@ Send a RunPod request with `input`:
 - `image_size` (optional): panel size in pixels (default: `320`)
 - `render_dist` (optional): camera distance (default: `0.78`, lower = larger face, higher = more zoomed out)
 - `bg_color` (optional): `[r, g, b]` floats in `[0,1]` (default: `[0.08, 0.08, 0.1]`)
+- `render_scale` (optional): render super-sampling scale (default: `1.0`, try `1.5` or `2.0` for cleaner edges)
+- `video_crf` (optional): H264 quality (default: `18`, lower = better quality, range `0..51`)
 
 Backward-compatible input keys still accepted:
 - `input_npz_s3_uri`
@@ -46,8 +48,10 @@ Backward-compatible input keys still accepted:
     "model_size": "256",
     "weights_path": "weights/best_model_dim_256_15.pt",
     "image_size": 256,
-    "render_dist": 0.78,
-    "bg_color": [0.08, 0.08, 0.1]
+    "render_dist": 0.75,
+    "bg_color": [1.0, 1.0, 1.0],
+    "render_scale": 2.0,
+    "video_crf": 16
   }
 }
 ```
@@ -61,8 +65,10 @@ Backward-compatible input keys still accepted:
   "model_size": "256",
   "weights_path": "/app/weights/best_model_dim_256_15.pt",
   "image_size": 256,
-  "render_dist": 0.78,
-  "bg_color": [0.08, 0.08, 0.1],
+  "render_dist": 0.75,
+  "bg_color": [1.0, 1.0, 1.0],
+  "render_scale": 2.0,
+  "video_crf": 16,
   "duration_sec": 42.73,
   "timings": {
     "download_sec": 1.24,
@@ -89,3 +95,9 @@ Optional weights envs:
 - FLAME assets must be present in `runpod/render/flame/`.
 - `weights_path` can be absolute (for example `/app/weights/...`) or relative to `/app`.
 - If `imageio` mp4 backend is unavailable, the pipeline falls back to direct `ffmpeg` encoding.
+
+## Quality tips
+
+- Fast (good): `image_size: 320`, `render_scale: 1.0`, `video_crf: 18`
+- Cleaner edges: `image_size: 320`, `render_scale: 1.5`, `video_crf: 16`
+- Best quality: `image_size: 384`, `render_scale: 2.0`, `video_crf: 14`
