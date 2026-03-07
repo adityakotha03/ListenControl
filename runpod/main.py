@@ -10,28 +10,40 @@ from transformers import Wav2Vec2Model
 from model.architecture import ListenControl128, ListenControl256
 from render.render_pipeline import FlameRenderPipeline
 
+DEFAULT_WEIGHTS_BY_SIZE = {
+    "128": Path("weights/best_model_dim_128_30.pt"),
+    "256": Path("weights/best_model_dim_256_30.pt"),
+}
+
 
 class ListenControlPredictor:
     """Loads all models once and runs flame + audio inference."""
 
     def __init__(
         self,
-        weights_path="weights/best_model_dim_128_30.pt",
+        weights_path=None,
         model_size="128",
         w2v_name="facebook/wav2vec2-base-960h",
         device=None,
     ):
+        model_size = str(model_size)
+        if model_size not in {"128", "256"}:
+            raise ValueError(f"Invalid model_size={model_size}. Use '128' or '256'.")
+
+        if weights_path is None:
+            weights_path = DEFAULT_WEIGHTS_BY_SIZE[model_size]
+
         weights_path = Path(weights_path)
         if not weights_path.exists():
             raise FileNotFoundError(
                 f"ListenControl weights not found: {weights_path}\n"
-                "Set LISTEN_WEIGHTS_PATH or place weights/best_model_dim_128_30.pt in the project."
+                "Set weights_path or place model weights in the weights folder."
             )
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.w2v_model = Wav2Vec2Model.from_pretrained(w2v_name).to(self.device)
         self.w2v_model.eval()
 
-        if str(model_size) == "256":
+        if model_size == "256":
             self.model = ListenControl256(flame_in_dim=56, out_dim=56).to(self.device)
         else:
             self.model = ListenControl128(flame_in_dim=56, out_dim=56).to(self.device)
@@ -103,7 +115,9 @@ def save_comparison_video_with_audio(
     fps=25,
     expression_dim=50,
     pose_dim=6,
-    image_size=384,
+    image_size=320,
+    render_dist=0.62,
+    bg_color=(0.08, 0.08, 0.1),
 ):
     """
     Render original / ground-truth / predicted FLAME side-by-side video
@@ -143,7 +157,12 @@ def save_comparison_video_with_audio(
             expression_params=exp,
             pose_params=pose,
         )
-        image = renderer.render_vertices(vertices, image_size=image_size)[0]
+        image = renderer.render_vertices(
+            vertices,
+            image_size=image_size,
+            dist=render_dist,
+            bg_color=bg_color,
+        )[0]
         return (image.detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
 
     # On some Windows setups, PyTorch3D installs without CUDA kernels.
@@ -251,10 +270,12 @@ def run_pipeline(
     wav_path,
     output_path,
     predictor=None,
-    weights_path="weights/best_model_dim_128_30.pt",
+    weights_path=None,
     model_size="128",
     fps=25,
-    image_size=384,
+    image_size=320,
+    render_dist=0.62,
+    bg_color=(0.08, 0.08, 0.1),
 ):
     """
     Single entrypoint for serverless: predict + render comparison video.
@@ -290,6 +311,8 @@ def run_pipeline(
         shape_params=shape_params,
         fps=fps,
         image_size=image_size,
+        render_dist=render_dist,
+        bg_color=bg_color,
     )
     return video_path
 

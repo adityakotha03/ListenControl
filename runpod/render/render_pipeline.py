@@ -133,12 +133,14 @@ class FlameRenderPipeline:
         self,
         vertices,
         image_size=1024,
-        dist=1.0,
+        dist=0.62,
         elev=0.0,
         azim=0.0,
         skin_color=(0.8, 0.6, 0.5),
+        bg_color=(0.08, 0.08, 0.1),
     ):
         from pytorch3d.renderer import (  # type: ignore[import-not-found]
+            BlendParams,
             FoVPerspectiveCameras,
             Materials,
             MeshRasterizer,
@@ -185,6 +187,7 @@ class FlameRenderPipeline:
                 cameras=cameras,
                 lights=lights,
                 materials=materials,
+                blend_params=BlendParams(background_color=bg_color),
             ),
         )
         image = renderer(meshes)[..., :3]
