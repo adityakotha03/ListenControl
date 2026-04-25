@@ -7,13 +7,38 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from transformers import Wav2Vec2Model
-from model.architecture import ListenControl128, ListenControl256
+from model.architecture import BidirCrossTransformer, ListenControl128, ListenControl256
 from render.render_pipeline import FlameRenderPipeline
 
-DEFAULT_WEIGHTS_BY_SIZE = {
+DEFAULT_MODEL_NAME = "bidir_cross_transformer"
+
+DEFAULT_WEIGHTS_BY_MODEL = {
+    "bidir_cross_transformer": Path("weights/best_bidir_cross_transformer.pt"),
     "128": Path("weights/best_model_dim_128_30.pt"),
     "256": Path("weights/best_model_dim_256_30.pt"),
 }
+
+
+def normalize_model_name(model_name=None, model_size=None):
+    value = model_name if model_name is not None else model_size
+    if value is None:
+        return DEFAULT_MODEL_NAME
+
+    value = str(value).strip().lower()
+    aliases = {
+        "bidir": "bidir_cross_transformer",
+        "bidir_cross": "bidir_cross_transformer",
+        "bidir_cross_transformer": "bidir_cross_transformer",
+        "bidircrosstransformer": "bidir_cross_transformer",
+        "cross_transformer": "bidir_cross_transformer",
+        "transformer": "bidir_cross_transformer",
+        "128": "128",
+        "256": "256",
+    }
+    if value not in aliases:
+        allowed = "', '".join(DEFAULT_WEIGHTS_BY_MODEL)
+        raise ValueError(f"Invalid model_name={value}. Use one of: '{allowed}'.")
+    return aliases[value]
 
 
 class ListenControlPredictor:
@@ -22,16 +47,15 @@ class ListenControlPredictor:
     def __init__(
         self,
         weights_path=None,
-        model_size="128",
+        model_size=None,
+        model_name=None,
         w2v_name="facebook/wav2vec2-base-960h",
         device=None,
     ):
-        model_size = str(model_size)
-        if model_size not in {"128", "256"}:
-            raise ValueError(f"Invalid model_size={model_size}. Use '128' or '256'.")
+        self.model_name = normalize_model_name(model_name=model_name, model_size=model_size)
 
         if weights_path is None:
-            weights_path = DEFAULT_WEIGHTS_BY_SIZE[model_size]
+            weights_path = DEFAULT_WEIGHTS_BY_MODEL[self.model_name]
 
         weights_path = Path(weights_path)
         if not weights_path.exists():
@@ -43,12 +67,29 @@ class ListenControlPredictor:
         self.w2v_model = Wav2Vec2Model.from_pretrained(w2v_name).to(self.device)
         self.w2v_model.eval()
 
-        if model_size == "256":
+        if self.model_name == "bidir_cross_transformer":
+            self.model = BidirCrossTransformer(
+                w2v_dim=768,
+                flame_in_dim=56,
+                d_model=256,
+                nhead=8,
+                num_layers=3,
+                ff_dim=1024,
+                out_dim=56,
+                dropout=0.2,
+                max_len=200,
+                gru_hidden=512,
+                gru_layers=2,
+            ).to(self.device)
+        elif self.model_name == "256":
             self.model = ListenControl256(flame_in_dim=56, out_dim=56).to(self.device)
         else:
             self.model = ListenControl128(flame_in_dim=56, out_dim=56).to(self.device)
 
-        state_dict = torch.load(str(weights_path), map_location=self.device)
+        checkpoint = torch.load(str(weights_path), map_location=self.device)
+        state_dict = checkpoint
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))
         self.model.load_state_dict(state_dict)
         self.model.eval()
 
@@ -99,7 +140,15 @@ class ListenControlPredictor:
 
         target_T = x_flame_tensor.shape[1]
         x_w2v = self.batch_to_wav2vec_features(x_audio, x_lens, target_T=target_T)  # [1, T, 768]
-        predicted_flame = self.model(x_w2v, x_flame_tensor).squeeze(0).cpu().numpy()
+        if self.model_name == "bidir_cross_transformer":
+            predicted_flame = self.model(
+                x_w2v,
+                x_flame_tensor,
+                y_gt=None,
+                tf_ratio=0.0,
+            ).squeeze(0).cpu().numpy()
+        else:
+            predicted_flame = self.model(x_w2v, x_flame_tensor).squeeze(0).cpu().numpy()
 
         return x_flame, y_flame, predicted_flame
 
@@ -315,7 +364,8 @@ def run_pipeline(
     output_path,
     predictor=None,
     weights_path=None,
-    model_size="128",
+    model_size=None,
+    model_name=None,
     fps=25,
     image_size=320,
     render_dist=0.78,
@@ -335,6 +385,7 @@ def run_pipeline(
     if predictor is None:
         predictor = ListenControlPredictor(
             weights_path=weights_path,
+            model_name=model_name,
             model_size=model_size,
         )
 

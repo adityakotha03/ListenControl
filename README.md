@@ -13,7 +13,7 @@ Send a RunPod request with `input`:
 - `input_npz_uri` (**required**): `s3://...` or `https://...`
 - `input_wav_uri` (**required**): `s3://...` or `https://...`
 - `output_s3_uri` (**required**): output destination (`s3://bucket/key.mp4`)
-- `model_size` (optional): `"128"` or `"256"` (default: `"128"`)
+- `model_name` (optional): `"bidir_cross_transformer"` (default), `"128"`, or `"256"`
 - `weights_path` (optional): custom weights path inside container
 - `image_size` (optional): panel size in pixels (default: `320`)
 - `render_dist` (optional): camera distance (default: `0.78`, lower = larger face, higher = more zoomed out)
@@ -24,6 +24,7 @@ Send a RunPod request with `input`:
 Backward-compatible input keys still accepted:
 - `input_npz_s3_uri`
 - `input_wav_s3_uri`
+- `model_size` (`"128"` or `"256"` for old checkpoints)
 
 ## Minimal request example
 
@@ -45,8 +46,27 @@ Backward-compatible input keys still accepted:
     "input_npz_uri": "s3://listencontrol/ex1.npz",
     "input_wav_uri": "s3://listencontrol/ex1.wav",
     "output_s3_uri": "s3://listencontrol/outputs/result_256.mp4",
-    "model_size": "256",
-    "weights_path": "weights/best_model_dim_256_15.pt",
+    "model_name": "256",
+    "weights_path": "weights/best_model_dim_256_30.pt",
+    "image_size": 256,
+    "render_dist": 0.75,
+    "bg_color": [1.0, 1.0, 1.0],
+    "render_scale": 2.0,
+    "video_crf": 16
+  }
+}
+```
+
+## Full request example (new BidirCrossTransformer model + render tuning)
+
+```json
+{
+  "input": {
+    "input_npz_uri": "s3://listencontrol/ex1.npz",
+    "input_wav_uri": "s3://listencontrol/ex1.wav",
+    "output_s3_uri": "s3://listencontrol/outputs/result_bidir.mp4",
+    "model_name": "bidir_cross_transformer",
+    "weights_path": "weights/best_bidir_cross_transformer.pt",
     "image_size": 256,
     "render_dist": 0.75,
     "bg_color": [1.0, 1.0, 1.0],
@@ -61,9 +81,9 @@ Backward-compatible input keys still accepted:
 ```json
 {
   "status": "success",
-  "output_s3_uri": "s3://listencontrol/outputs/result_256.mp4",
-  "model_size": "256",
-  "weights_path": "/app/weights/best_model_dim_256_15.pt",
+  "output_s3_uri": "s3://listencontrol/outputs/result_bidir.mp4",
+  "model_name": "bidir_cross_transformer",
+  "weights_path": "/app/weights/best_bidir_cross_transformer.pt",
   "image_size": 256,
   "render_dist": 0.75,
   "bg_color": [1.0, 1.0, 1.0],
@@ -87,6 +107,7 @@ Backward-compatible input keys still accepted:
 
 Optional weights envs:
 - `LISTEN_WEIGHTS_PATH` (global default)
+- `LISTEN_WEIGHTS_PATH_BIDIR_CROSS_TRANSFORMER` (default for BidirCrossTransformer)
 - `LISTEN_WEIGHTS_PATH_128` (default for model 128)
 - `LISTEN_WEIGHTS_PATH_256` (default for model 256)
 
@@ -94,6 +115,7 @@ Optional weights envs:
 
 - FLAME assets must be present in `runpod/render/flame/`.
 - `weights_path` can be absolute (for example `/app/weights/...`) or relative to `/app`.
+- The BidirCrossTransformer is run autoregressively at inference with `tf_ratio=0.0`.
 - If `imageio` mp4 backend is unavailable, the pipeline falls back to direct `ffmpeg` encoding.
 
 ## Quality tips

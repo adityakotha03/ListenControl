@@ -1,6 +1,6 @@
 """
 RunPod handler: input download (S3 or HTTPS) -> inference/render -> S3 upload.
-Supports selecting model size/weights and render sizing per request.
+Supports selecting model/weights and render sizing per request.
 """
 import os
 import shutil
@@ -13,21 +13,45 @@ from urllib.request import urlretrieve
 import runpod
 
 
-def _normalize_model_size(model_size) -> str:
-    model_size = str(model_size or "128").strip()
-    if model_size not in {"128", "256"}:
-        raise ValueError(f"Invalid model_size={model_size}. Use '128' or '256'.")
-    return model_size
+DEFAULT_MODEL_NAME = "bidir_cross_transformer"
+
+DEFAULT_WEIGHTS_BY_MODEL = {
+    "bidir_cross_transformer": "best_bidir_cross_transformer.pt",
+    "128": "best_model_dim_128_30.pt",
+    "256": "best_model_dim_256_30.pt",
+}
 
 
-def _resolve_weights_path(root: Path, model_size: str, explicit_weights_path=None) -> Path:
+def _normalize_model_name(model_name=None, model_size=None) -> str:
+    value = model_name if model_name is not None else model_size
+    if value is None:
+        return DEFAULT_MODEL_NAME
+
+    value = str(value).strip().lower()
+    aliases = {
+        "bidir": "bidir_cross_transformer",
+        "bidir_cross": "bidir_cross_transformer",
+        "bidir_cross_transformer": "bidir_cross_transformer",
+        "bidircrosstransformer": "bidir_cross_transformer",
+        "cross_transformer": "bidir_cross_transformer",
+        "transformer": "bidir_cross_transformer",
+        "128": "128",
+        "256": "256",
+    }
+    if value not in aliases:
+        allowed = "', '".join(DEFAULT_WEIGHTS_BY_MODEL)
+        raise ValueError(f"Invalid model_name={value}. Use one of: '{allowed}'.")
+    return aliases[value]
+
+
+def _resolve_weights_path(root: Path, model_name: str, explicit_weights_path=None) -> Path:
     if explicit_weights_path:
         p = Path(explicit_weights_path)
         if not p.is_absolute():
             p = root / p
         return p
 
-    env_specific = os.environ.get(f"LISTEN_WEIGHTS_PATH_{model_size}")
+    env_specific = os.environ.get(f"LISTEN_WEIGHTS_PATH_{model_name.upper()}")
     if env_specific:
         return Path(env_specific)
 
@@ -35,7 +59,7 @@ def _resolve_weights_path(root: Path, model_size: str, explicit_weights_path=Non
     if env_general:
         return Path(env_general)
 
-    default_name = f"best_model_dim_{model_size}_30.pt"
+    default_name = DEFAULT_WEIGHTS_BY_MODEL[model_name]
     return root / "weights" / default_name
 
 
@@ -50,30 +74,33 @@ def _validate_assets_on_startup():
             raise SystemExit(f"Missing FLAME asset: {p}\nPlace FLAME files in {flame_dir}")
 
     weights_dir = root / "weights"
-    has_env_weight = bool(os.environ.get("LISTEN_WEIGHTS_PATH") or os.environ.get("LISTEN_WEIGHTS_PATH_128") or os.environ.get("LISTEN_WEIGHTS_PATH_256"))
+    has_env_weight = any(
+        name == "LISTEN_WEIGHTS_PATH" or name.startswith("LISTEN_WEIGHTS_PATH_")
+        for name in os.environ
+    )
     has_local_weight = weights_dir.exists() and any(weights_dir.glob("*.pt"))
     if not has_env_weight and not has_local_weight:
         raise SystemExit(
             f"No model weights found in {weights_dir} and no LISTEN_WEIGHTS_PATH envs set.\n"
-            "Add at least one .pt file or set LISTEN_WEIGHTS_PATH(_128/_256)."
+            "Add at least one .pt file or set LISTEN_WEIGHTS_PATH."
         )
 
 
 _validate_assets_on_startup()
 
-# Lazy predictor cache keyed by (model_size, weights_path)
+# Lazy predictor cache keyed by (model_name, weights_path)
 _predictors = {}
 
 
-def _get_predictor(model_size: str, weights_path: Path):
-    key = (model_size, str(weights_path.resolve()))
+def _get_predictor(model_name: str, weights_path: Path):
+    key = (model_name, str(weights_path.resolve()))
     predictor = _predictors.get(key)
     if predictor is not None:
         return predictor
 
     from main import ListenControlPredictor
 
-    predictor = ListenControlPredictor(weights_path=str(weights_path), model_size=model_size)
+    predictor = ListenControlPredictor(weights_path=str(weights_path), model_name=model_name)
     _predictors[key] = predictor
     return predictor
 
@@ -136,7 +163,10 @@ def handler(event):
             "error": "Missing required input: input_npz_uri, input_wav_uri, output_s3_uri",
         }
 
-    model_size = _normalize_model_size(inp.get("model_size", "128"))
+    model_name = _normalize_model_name(
+        model_name=inp.get("model_name"),
+        model_size=inp.get("model_size"),
+    )
     render_image_size = int(inp.get("image_size", 320))
     render_dist = float(inp.get("render_dist", 0.78))
     bg_color = _parse_bg_color(inp.get("bg_color"))
@@ -168,11 +198,11 @@ def handler(event):
 
     try:
         root = Path(__file__).resolve().parent
-        weights_path = _resolve_weights_path(root, model_size, explicit_weights_path=inp.get("weights_path"))
+        weights_path = _resolve_weights_path(root, model_name, explicit_weights_path=inp.get("weights_path"))
         if not weights_path.exists():
             raise FileNotFoundError(
                 f"Requested weights file does not exist: {weights_path}\n"
-                "Set weights_path in input or LISTEN_WEIGHTS_PATH(_128/_256)."
+                "Set weights_path in input or LISTEN_WEIGHTS_PATH."
             )
 
         t0 = time.perf_counter()
@@ -184,14 +214,14 @@ def handler(event):
         t1 = time.perf_counter()
         from main import run_pipeline
 
-        predictor = _get_predictor(model_size=model_size, weights_path=weights_path)
+        predictor = _get_predictor(model_name=model_name, weights_path=weights_path)
         used_device = str(predictor.device)
         video_path = run_pipeline(
             npz_path=npz_path,
             wav_path=wav_path,
             output_path=out_path,
             predictor=predictor,
-            model_size=model_size,
+            model_name=model_name,
             image_size=render_image_size,
             render_dist=render_dist,
             bg_color=bg_color,
@@ -210,7 +240,7 @@ def handler(event):
         return {
             "status": "success",
             "output_s3_uri": output_uri,
-            "model_size": model_size,
+            "model_name": model_name,
             "weights_path": str(weights_path),
             "image_size": render_image_size,
             "render_dist": render_dist,
