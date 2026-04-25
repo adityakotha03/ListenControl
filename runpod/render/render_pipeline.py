@@ -70,6 +70,8 @@ class FlameRenderPipeline:
 
         self.flame_model = FLAME(self.config).to(self.device)
         self.flame_model.eval()
+        self._faces_tensor = None
+        self._renderer_cache = {}
 
     def _is_valid_file(self, path, min_size_bytes):
         return path.exists() and path.stat().st_size >= min_size_bytes
@@ -157,39 +159,51 @@ class FlameRenderPipeline:
         if vertices.dim() == 2:
             vertices = vertices.unsqueeze(0)
 
-        faces = (
-            torch.tensor(self.flame_model.faces, dtype=torch.long, device=self.device)
-            .unsqueeze(0)
-            .expand(vertices.shape[0], -1, -1)
-        )
+        if self._faces_tensor is None:
+            self._faces_tensor = torch.tensor(
+                self.flame_model.faces,
+                dtype=torch.long,
+                device=self.device,
+            )
+        faces = self._faces_tensor.unsqueeze(0).expand(vertices.shape[0], -1, -1)
         base_color = torch.tensor([skin_color], device=self.device, dtype=torch.float32)
         verts_rgb = base_color.expand(vertices.shape[0], vertices.shape[1], 3)
         textures = TexturesVertex(verts_features=verts_rgb)
         meshes = Meshes(verts=vertices, faces=faces, textures=textures)
 
-        R, T = look_at_view_transform(dist=dist, elev=elev, azim=azim)
-        cameras = FoVPerspectiveCameras(device=self.device, R=R, T=T)
-        lights = PointLights(device=self.device, location=[[0.0, 1.0, 3.0]])
-        materials = Materials(
-            device=self.device,
-            specular_color=[[0.3, 0.3, 0.3]],
-            shininess=15.0,
+        render_key = (
+            int(image_size),
+            float(dist),
+            float(elev),
+            float(azim),
+            tuple(float(v) for v in bg_color),
         )
-        raster_settings = RasterizationSettings(
-            image_size=image_size,
-            blur_radius=0.0,
-            faces_per_pixel=1,
-        )
-        renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
-            shader=SoftPhongShader(
+        renderer = self._renderer_cache.get(render_key)
+        if renderer is None:
+            R, T = look_at_view_transform(dist=dist, elev=elev, azim=azim)
+            cameras = FoVPerspectiveCameras(device=self.device, R=R, T=T)
+            lights = PointLights(device=self.device, location=[[0.0, 1.0, 3.0]])
+            materials = Materials(
                 device=self.device,
-                cameras=cameras,
-                lights=lights,
-                materials=materials,
-                blend_params=BlendParams(background_color=bg_color),
-            ),
-        )
+                specular_color=[[0.3, 0.3, 0.3]],
+                shininess=15.0,
+            )
+            raster_settings = RasterizationSettings(
+                image_size=image_size,
+                blur_radius=0.0,
+                faces_per_pixel=1,
+            )
+            renderer = MeshRenderer(
+                rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+                shader=SoftPhongShader(
+                    device=self.device,
+                    cameras=cameras,
+                    lights=lights,
+                    materials=materials,
+                    blend_params=BlendParams(background_color=bg_color),
+                ),
+            )
+            self._renderer_cache[render_key] = renderer
         image = renderer(meshes)[..., :3]
         return image
 

@@ -172,6 +172,8 @@ def handler(event):
     bg_color = _parse_bg_color(inp.get("bg_color"))
     render_scale = float(inp.get("render_scale", 1.0))
     video_crf = int(inp.get("video_crf", 18))
+    render_frame_stride = int(inp.get("render_frame_stride", inp.get("frame_stride", 1)))
+    render_panels = inp.get("render_panels", inp.get("panels"))
 
     region = os.environ.get("REGION_S3", "us-east-1")
     access_key = os.environ.get("ACCESS_KEY_ID_S3")
@@ -212,8 +214,9 @@ def handler(event):
         print(f"[{job_id}] Downloaded in {timings['download_sec']}s")
 
         t1 = time.perf_counter()
-        from main import run_pipeline
+        from main import normalize_render_panels, run_pipeline
 
+        normalized_render_panels = normalize_render_panels(render_panels)
         predictor = _get_predictor(model_name=model_name, weights_path=weights_path)
         used_device = str(predictor.device)
         video_path = run_pipeline(
@@ -227,6 +230,9 @@ def handler(event):
             bg_color=bg_color,
             render_scale=render_scale,
             video_crf=video_crf,
+            render_frame_stride=render_frame_stride,
+            render_panels=normalized_render_panels,
+            timings=timings,
         )
         timings["pipeline_sec"] = round(time.perf_counter() - t1, 2)
         print(f"[{job_id}] Pipeline done in {timings['pipeline_sec']}s")
@@ -247,6 +253,8 @@ def handler(event):
             "bg_color": bg_color,
             "render_scale": render_scale,
             "video_crf": video_crf,
+            "render_frame_stride": render_frame_stride,
+            "render_panels": list(normalized_render_panels),
             "duration_sec": total,
             "timings": timings,
             "used_device": used_device,

@@ -20,6 +20,8 @@ Send a RunPod request with `input`:
 - `bg_color` (optional): `[r, g, b]` floats in `[0,1]` (default: `[0.08, 0.08, 0.1]`)
 - `render_scale` (optional): render super-sampling scale (default: `1.0`, try `1.5` or `2.0` for cleaner edges)
 - `video_crf` (optional): H264 quality (default: `18`, lower = better quality, range `0..51`)
+- `render_frame_stride` (optional): render every Nth unique source frame and repeat frames to preserve duration (default: `1`)
+- `render_panels` (optional): `"all"` or an array using `"input"`, `"ground_truth"`, `"predicted"` (default: all three)
 
 Backward-compatible input keys still accepted:
 - `input_npz_s3_uri`
@@ -76,6 +78,31 @@ Backward-compatible input keys still accepted:
 }
 ```
 
+## Timeout-safe request example
+
+Use this when jobs are close to RunPod's default 10-minute execution timeout. `policy` is top-level, not inside `input`.
+
+```json
+{
+  "input": {
+    "input_npz_uri": "s3://listencontrol/ex1.npz",
+    "input_wav_uri": "s3://listencontrol/ex1.wav",
+    "output_s3_uri": "s3://listencontrol/outputs/result_bidir_fast.mp4",
+    "model_name": "bidir_cross_transformer",
+    "weights_path": "weights/best_bidir_cross_transformer.pt",
+    "image_size": 256,
+    "render_scale": 1.0,
+    "render_frame_stride": 2,
+    "render_panels": ["predicted"],
+    "video_crf": 20
+  },
+  "policy": {
+    "executionTimeout": 1200000,
+    "ttl": 1800000
+  }
+}
+```
+
 ## Success response example
 
 ```json
@@ -116,6 +143,7 @@ Optional weights envs:
 - FLAME assets must be present in `runpod/render/flame/`.
 - `weights_path` can be absolute (for example `/app/weights/...`) or relative to `/app`.
 - The BidirCrossTransformer is run autoregressively at inference with `tf_ratio=0.0`.
+- For faster jobs, use `render_panels: ["predicted"]` and `render_frame_stride: 2` or `4`.
 - If `imageio` mp4 backend is unavailable, the pipeline falls back to direct `ffmpeg` encoding.
 
 ## Quality tips

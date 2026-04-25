@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import imageio.v2 as imageio
 import numpy as np
 import torch
@@ -17,6 +18,8 @@ DEFAULT_WEIGHTS_BY_MODEL = {
     "128": Path("weights/best_model_dim_128_30.pt"),
     "256": Path("weights/best_model_dim_256_30.pt"),
 }
+
+DEFAULT_RENDER_PANELS = ("input", "ground_truth", "predicted")
 
 
 def normalize_model_name(model_name=None, model_size=None):
@@ -39,6 +42,47 @@ def normalize_model_name(model_name=None, model_size=None):
         allowed = "', '".join(DEFAULT_WEIGHTS_BY_MODEL)
         raise ValueError(f"Invalid model_name={value}. Use one of: '{allowed}'.")
     return aliases[value]
+
+
+def normalize_render_panels(render_panels=None):
+    if render_panels is None:
+        return DEFAULT_RENDER_PANELS
+
+    if isinstance(render_panels, str):
+        value = render_panels.strip().lower()
+        if value in {"all", "comparison", "default"}:
+            return DEFAULT_RENDER_PANELS
+        panel_values = [p.strip() for p in value.replace("|", ",").split(",") if p.strip()]
+    else:
+        panel_values = list(render_panels)
+
+    aliases = {
+        "input": "input",
+        "original": "input",
+        "source": "input",
+        "x": "input",
+        "ground_truth": "ground_truth",
+        "groundtruth": "ground_truth",
+        "target": "ground_truth",
+        "true": "ground_truth",
+        "y": "ground_truth",
+        "predicted": "predicted",
+        "prediction": "predicted",
+        "pred": "predicted",
+    }
+    panels = []
+    for panel in panel_values:
+        key = str(panel).strip().lower()
+        if key not in aliases:
+            allowed = "', '".join(["input", "ground_truth", "predicted"])
+            raise ValueError(f"Invalid render panel={panel}. Use one or more of: '{allowed}'.")
+        normalized = aliases[key]
+        if normalized not in panels:
+            panels.append(normalized)
+
+    if not panels:
+        raise ValueError("render_panels must include at least one panel.")
+    return tuple(panels)
 
 
 class ListenControlPredictor:
@@ -169,6 +213,8 @@ def save_comparison_video_with_audio(
     bg_color=(0.08, 0.08, 0.1),
     render_scale=1.0,
     video_crf=18,
+    render_frame_stride=1,
+    render_panels=None,
 ):
     """
     Render original / ground-truth / predicted FLAME side-by-side video
@@ -192,6 +238,10 @@ def save_comparison_video_with_audio(
     video_crf = int(video_crf)
     if video_crf < 0 or video_crf > 51:
         raise ValueError("video_crf must be between 0 and 51 (lower means better quality).")
+    render_frame_stride = int(render_frame_stride)
+    if render_frame_stride < 1:
+        raise ValueError("render_frame_stride must be >= 1.")
+    panels = normalize_render_panels(render_panels)
     render_image_size = int(round(image_size * render_scale))
 
     def init_renderer(device_override=None):
@@ -205,6 +255,12 @@ def save_comparison_video_with_audio(
 
     num_frames = min(x_seq.shape[0], y_seq.shape[0], pred.shape[0])
     renderer, shape_tensor = init_renderer()
+    source_frame_count = (num_frames + render_frame_stride - 1) // render_frame_stride
+    if render_frame_stride > 1 or panels != DEFAULT_RENDER_PANELS:
+        print(
+            "Rendering "
+            f"{source_frame_count}/{num_frames} unique frames, panels={','.join(panels)}"
+        )
 
     def render_one_frame(frame_vec):
         frame_vec = torch.from_numpy(frame_vec).to(renderer.device)
@@ -256,13 +312,25 @@ def save_comparison_video_with_audio(
                 raise
 
     ffmpeg_path = shutil.which("ffmpeg")
+    panel_sequences = {
+        "input": x_seq,
+        "ground_truth": y_seq,
+        "predicted": pred,
+    }
 
     def iter_combined_frames():
-        for frame_idx in range(num_frames):
-            frame_x = render_one_frame(x_seq[frame_idx])
-            frame_y = render_one_frame(y_seq[frame_idx])
-            frame_pred = render_one_frame(pred[frame_idx])
-            yield np.concatenate([frame_x, frame_y, frame_pred], axis=1)
+        for frame_idx in range(0, num_frames, render_frame_stride):
+            rendered_panels = [
+                render_one_frame(panel_sequences[panel][frame_idx])
+                for panel in panels
+            ]
+            if len(rendered_panels) == 1:
+                combined = rendered_panels[0]
+            else:
+                combined = np.concatenate(rendered_panels, axis=1)
+            repeat_count = min(render_frame_stride, num_frames - frame_idx)
+            for _ in range(repeat_count):
+                yield combined
 
     # Prefer imageio writer. Some worker environments miss the plugin backend.
     # Fall back to direct ffmpeg piping so jobs still succeed.
@@ -290,7 +358,7 @@ def save_comparison_video_with_audio(
                 "Failed to write MP4: imageio backend missing and ffmpeg binary not found."
             ) from e
         print("imageio MP4 backend missing. Falling back to direct ffmpeg encoding.")
-        width = int(image_size * 3)
+        width = int(image_size * len(panels))
         height = int(image_size)
         encode_cmd = [
             ffmpeg_path,
@@ -372,6 +440,9 @@ def run_pipeline(
     bg_color=(0.08, 0.08, 0.1),
     render_scale=1.0,
     video_crf=18,
+    render_frame_stride=1,
+    render_panels=None,
+    timings=None,
 ):
     """
     Single entrypoint for serverless: predict + render comparison video.
@@ -389,16 +460,22 @@ def run_pipeline(
             model_size=model_size,
         )
 
+    if timings is None:
+        timings = {}
+
+    t_predict = time.perf_counter()
     x_flame, y_flame, predicted_flame = predictor.predict(
         sample_path_flame=npz_path,
         sample_path_audio=wav_path,
     )
+    timings["predict_sec"] = round(time.perf_counter() - t_predict, 2)
 
     shape_params = None
     with np.load(npz_path) as data:
         if "shape" in data:
             shape_params = data["shape"][0]
 
+    t_render = time.perf_counter()
     video_path = save_comparison_video_with_audio(
         x_flame=x_flame,
         y_flame=y_flame,
@@ -412,7 +489,10 @@ def run_pipeline(
         bg_color=bg_color,
         render_scale=render_scale,
         video_crf=video_crf,
+        render_frame_stride=render_frame_stride,
+        render_panels=render_panels,
     )
+    timings["render_sec"] = round(time.perf_counter() - t_render, 2)
     return video_path
 
 
