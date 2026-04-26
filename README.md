@@ -80,6 +80,17 @@ python main.py \
   --guidance-scale 5.0
 ```
 
+Run v6.1 without text conditioning or FiLM modulation:
+
+```bash
+python main.py \
+  --npz samples/ex1.npz \
+  --wav samples/ex1.wav \
+  -o outputs/ex1_v61_no_text.mp4 \
+  --model v6.1 \
+  --no-text-conditioning
+```
+
 **Guidance scale tips:**
 - `1.0` or omitted: no amplification, raw model output
 - `3.0`: moderate emotion steering (good default)
@@ -133,6 +144,7 @@ Send a RunPod request with `input`:
 - `model_name` (optional): see table above (default: `"bidir_cross_transformer"`)
 - `weights_path` (optional): custom weights path inside container
 - `text_prompt` (optional): free-form text control for `"emotion_conditioned_transformer"` (default: `"unknown emotion"`)
+- `text_conditioning` (optional): set `false` for v6.1 to bypass text/FiLM modulation
 - `guidance_scale` (optional): CFG scale for emotion amplification (default: none/disabled, try `3.0`-`7.0`)
 - `image_size` (optional): panel size in pixels (default: `320`)
 - `render_dist` (optional): camera distance (default: `0.78`)
@@ -207,6 +219,25 @@ Send a RunPod request with `input`:
 }
 ```
 
+### Pipeline 6.1 request without text modulation
+
+This uses the v6.1 checkpoint but bypasses text/FiLM conditioning. Do not include `text_prompt` or `guidance_scale` for this mode.
+
+```json
+{
+  "input": {
+    "input_npz_uri": "s3://listencontrol/ex1.npz",
+    "input_wav_uri": "s3://listencontrol/ex1.wav",
+    "output_s3_uri": "s3://listencontrol/outputs/result_v61_no_text.mp4",
+    "model_name": "v6.1",
+    "text_conditioning": false,
+    "image_size": 320,
+    "render_panels": ["input", "ground_truth", "predicted"],
+    "video_crf": 18
+  }
+}
+```
+
 ### Text-controlled request with CFG + timeout policy (Pipeline 6.1)
 
 Use this when full three-panel rendering needs more than the default RunPod execution timeout. `policy` is top-level, not inside `input`.
@@ -254,5 +285,6 @@ Place these in `runpod/weights/`:
 - FLAME assets must be in `runpod/render/flame/`.
 - The BidirCrossTransformer runs autoregressively at inference (`tf_ratio=0.0`).
 - The emotion transformer encodes `text_prompt` with CLIP (`openai/clip-vit-base-patch32`) and applies FiLM modulation.
+- Omitting `text_prompt` on v6.1 uses `"unknown emotion"`; set `text_conditioning: false` for no text/FiLM modulation.
 - CFG runs the decoder twice (conditioned + unconditioned) and extrapolates: `y = y_uncond + scale * (y_cond - y_uncond)`.
 - If `best_emo_transformer_v2.pt` is missing, the code automatically falls back to `best_emo_transformer.pt`.

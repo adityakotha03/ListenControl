@@ -161,6 +161,22 @@ def _parse_bg_color(bg_value):
     return tuple(float(v) for v in bg_value)
 
 
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"1", "true", "yes", "y", "on"}:
+            return True
+        if value in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
+
 def handler(event):
     """
     Process request:
@@ -198,7 +214,18 @@ def handler(event):
         or inp.get("control_text")
         or inp.get("prompt")
     )
-    if model_name == "emotion_conditioned_transformer":
+    disable_text_conditioning = _parse_bool(
+        inp.get("disable_text_conditioning", inp.get("no_text_conditioning")),
+        default=False,
+    )
+    text_conditioning = _parse_bool(
+        inp.get("text_conditioning"),
+        default=not disable_text_conditioning,
+    )
+    if disable_text_conditioning:
+        text_conditioning = False
+
+    if model_name == "emotion_conditioned_transformer" and text_conditioning:
         text_prompt = str(text_prompt or DEFAULT_TEXT_PROMPT).strip() or DEFAULT_TEXT_PROMPT
     guidance_scale_raw = inp.get("guidance_scale", inp.get("cfg_scale"))
     guidance_scale = float(guidance_scale_raw) if guidance_scale_raw is not None else None
@@ -262,6 +289,7 @@ def handler(event):
             render_panels=normalized_render_panels,
             text_prompt=text_prompt,
             guidance_scale=guidance_scale,
+            text_conditioning=text_conditioning,
             timings=timings,
         )
         timings["pipeline_sec"] = round(time.perf_counter() - t1, 2)
@@ -287,6 +315,7 @@ def handler(event):
             "render_panels": list(normalized_render_panels),
             "text_prompt": text_prompt,
             "guidance_scale": guidance_scale,
+            "text_conditioning": text_conditioning,
             "duration_sec": total,
             "timings": timings,
             "used_device": used_device,

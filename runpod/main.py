@@ -240,7 +240,7 @@ class ListenControlPredictor:
 
     @torch.no_grad()
     def predict(self, sample_path_flame, sample_path_audio, text_prompt=None,
-                guidance_scale=None):
+                guidance_scale=None, text_conditioning=True):
         """
         Args:
             sample_path_flame: Path to .npz containing x_flame and y_flame.
@@ -248,6 +248,7 @@ class ListenControlPredictor:
             text_prompt: Optional free-form emotion/control prompt for pipeline 6.
             guidance_scale: If > 1.0, uses Classifier-Free Guidance to amplify
                 the emotion signal. Recommended: 3.0-7.0.
+            text_conditioning: If False for pipeline 6, bypasses FiLM text modulation.
         Returns:
             x_flame, y_flame, predicted_flame (all numpy arrays with shape [T, 56]).
         """
@@ -268,6 +269,15 @@ class ListenControlPredictor:
         x_w2v = self.batch_to_wav2vec_features(x_audio, x_lens, target_T=target_T)  # [1, T, 768]
 
         if self.model_name == "emotion_conditioned_transformer":
+            if not text_conditioning:
+                context = self.model.encode(x_w2v, x_flame_tensor)
+                predicted_flame = self.model.decode_ar(
+                    context,
+                    y_gt=None,
+                    tf_ratio=0.0,
+                ).squeeze(0).cpu().numpy()
+                return x_flame, y_flame, predicted_flame
+
             text_emb = self.encode_text_prompt(text_prompt).expand(x_w2v.shape[0], -1)
 
             if guidance_scale is not None and guidance_scale > 1.0:
@@ -547,6 +557,7 @@ def run_pipeline(
     render_panels=None,
     text_prompt=None,
     guidance_scale=None,
+    text_conditioning=True,
     timings=None,
 ):
     """
@@ -574,6 +585,7 @@ def run_pipeline(
         sample_path_audio=wav_path,
         text_prompt=text_prompt,
         guidance_scale=guidance_scale,
+        text_conditioning=text_conditioning,
     )
     timings["predict_sec"] = round(time.perf_counter() - t_predict, 2)
 
@@ -617,6 +629,8 @@ if __name__ == "__main__":
                         help="Emotion/control prompt (emo_transformer only)")
     parser.add_argument("--guidance-scale", "-g", type=float, default=None,
                         help="CFG guidance scale (emo_transformer only, try 3-7)")
+    parser.add_argument("--no-text-conditioning", action="store_true",
+                        help="For v6/v6.1, bypass text/FiLM modulation.")
     parser.add_argument("--image-size", type=int, default=320)
     parser.add_argument("--render-panels", nargs="*", default=None,
                         help="Panels to render: input ground_truth predicted")
@@ -631,6 +645,7 @@ if __name__ == "__main__":
         weights_path=args.weights,
         text_prompt=args.text_prompt,
         guidance_scale=args.guidance_scale,
+        text_conditioning=not args.no_text_conditioning,
         image_size=args.image_size,
         render_panels=args.render_panels,
         fps=args.fps,
