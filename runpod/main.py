@@ -7,16 +7,27 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-from transformers import Wav2Vec2Model
-from model.architecture import BidirCrossTransformer, ListenControl128, ListenControl256
+from transformers import CLIPTextModel, CLIPTokenizer, Wav2Vec2Model
+from model.architecture import (
+    BidirCrossTransformer,
+    EmotionConditionedTransformer,
+    ListenControl128,
+    ListenControl256,
+)
 from render.render_pipeline import FlameRenderPipeline
 
 DEFAULT_MODEL_NAME = "bidir_cross_transformer"
+DEFAULT_TEXT_PROMPT = "unknown emotion"
 
 DEFAULT_WEIGHTS_BY_MODEL = {
     "bidir_cross_transformer": Path("weights/best_bidir_cross_transformer.pt"),
+    "emotion_conditioned_transformer": Path("weights/best_emo_transformer_v2.pt"),
     "128": Path("weights/best_model_dim_128_30.pt"),
     "256": Path("weights/best_model_dim_256_30.pt"),
+}
+
+FALLBACK_WEIGHTS = {
+    "emotion_conditioned_transformer": Path("weights/best_emo_transformer.pt"),
 }
 
 DEFAULT_RENDER_PANELS = ("input", "ground_truth", "predicted")
@@ -35,6 +46,15 @@ def normalize_model_name(model_name=None, model_size=None):
         "bidircrosstransformer": "bidir_cross_transformer",
         "cross_transformer": "bidir_cross_transformer",
         "transformer": "bidir_cross_transformer",
+        "v5": "bidir_cross_transformer",
+        "emotion_conditioned_transformer": "emotion_conditioned_transformer",
+        "emotion_transformer": "emotion_conditioned_transformer",
+        "emo_transformer": "emotion_conditioned_transformer",
+        "text_control_transformer": "emotion_conditioned_transformer",
+        "text_conditioned_transformer": "emotion_conditioned_transformer",
+        "p6": "emotion_conditioned_transformer",
+        "v6": "emotion_conditioned_transformer",
+        "v6.1": "emotion_conditioned_transformer",
         "128": "128",
         "256": "256",
     }
@@ -94,12 +114,15 @@ class ListenControlPredictor:
         model_size=None,
         model_name=None,
         w2v_name="facebook/wav2vec2-base-960h",
+        clip_name="openai/clip-vit-base-patch32",
         device=None,
     ):
         self.model_name = normalize_model_name(model_name=model_name, model_size=model_size)
 
         if weights_path is None:
             weights_path = DEFAULT_WEIGHTS_BY_MODEL[self.model_name]
+            if not Path(weights_path).exists() and self.model_name in FALLBACK_WEIGHTS:
+                weights_path = FALLBACK_WEIGHTS[self.model_name]
 
         weights_path = Path(weights_path)
         if not weights_path.exists():
@@ -110,6 +133,9 @@ class ListenControlPredictor:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.w2v_model = Wav2Vec2Model.from_pretrained(w2v_name).to(self.device)
         self.w2v_model.eval()
+        self.clip_tokenizer = None
+        self.clip_text_model = None
+        self._uncond_emb = None
 
         if self.model_name == "bidir_cross_transformer":
             self.model = BidirCrossTransformer(
@@ -125,6 +151,25 @@ class ListenControlPredictor:
                 gru_hidden=512,
                 gru_layers=2,
             ).to(self.device)
+        elif self.model_name == "emotion_conditioned_transformer":
+            self.model = EmotionConditionedTransformer(
+                w2v_dim=768,
+                flame_in_dim=56,
+                d_model=256,
+                nhead=8,
+                num_layers=3,
+                ff_dim=1024,
+                out_dim=56,
+                dropout=0.2,
+                max_len=200,
+                gru_hidden=512,
+                gru_layers=2,
+                clip_dim=512,
+                emo_dim=64,
+            ).to(self.device)
+            self.clip_tokenizer = CLIPTokenizer.from_pretrained(clip_name)
+            self.clip_text_model = CLIPTextModel.from_pretrained(clip_name).to(self.device)
+            self.clip_text_model.eval()
         elif self.model_name == "256":
             self.model = ListenControl256(flame_in_dim=56, out_dim=56).to(self.device)
         else:
@@ -134,7 +179,16 @@ class ListenControlPredictor:
         state_dict = checkpoint
         if isinstance(checkpoint, dict):
             state_dict = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))
-        self.model.load_state_dict(state_dict)
+        if self.model_name == "emotion_conditioned_transformer":
+            incompatible = self.model.load_state_dict(state_dict, strict=False)
+            unexpected = [k for k in incompatible.unexpected_keys if k != "clip_emb"]
+            if incompatible.missing_keys or unexpected:
+                raise RuntimeError(
+                    "Failed to load EmotionConditionedTransformer weights. "
+                    f"missing={incompatible.missing_keys}, unexpected={unexpected}"
+                )
+        else:
+            self.model.load_state_dict(state_dict)
         self.model.eval()
 
     @torch.no_grad()
@@ -161,11 +215,39 @@ class ListenControlPredictor:
         return wav.squeeze(0)
 
     @torch.no_grad()
-    def predict(self, sample_path_flame, sample_path_audio):
+    def encode_text_prompt(self, text_prompt=None):
+        if self.clip_tokenizer is None or self.clip_text_model is None:
+            raise ValueError("text_prompt is only supported by the emotion_conditioned_transformer model.")
+
+        text_prompt = str(text_prompt or DEFAULT_TEXT_PROMPT).strip() or DEFAULT_TEXT_PROMPT
+        tokens = self.clip_tokenizer(
+            [text_prompt[:77]],
+            padding=True,
+            truncation=True,
+            max_length=77,
+            return_tensors="pt",
+        )
+        tokens = {k: v.to(self.device) for k, v in tokens.items()}
+        emb = self.clip_text_model(**tokens).pooler_output
+        return emb / emb.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+
+    @torch.no_grad()
+    def get_uncond_emb(self):
+        """Cached CLIP embedding for 'unknown emotion' (used as CFG baseline)."""
+        if self._uncond_emb is None:
+            self._uncond_emb = self.encode_text_prompt("unknown emotion")
+        return self._uncond_emb
+
+    @torch.no_grad()
+    def predict(self, sample_path_flame, sample_path_audio, text_prompt=None,
+                guidance_scale=None):
         """
         Args:
             sample_path_flame: Path to .npz containing x_flame and y_flame.
             sample_path_audio: Path to .wav audio.
+            text_prompt: Optional free-form emotion/control prompt for pipeline 6.
+            guidance_scale: If > 1.0, uses Classifier-Free Guidance to amplify
+                the emotion signal. Recommended: 3.0-7.0.
         Returns:
             x_flame, y_flame, predicted_flame (all numpy arrays with shape [T, 56]).
         """
@@ -184,7 +266,28 @@ class ListenControlPredictor:
 
         target_T = x_flame_tensor.shape[1]
         x_w2v = self.batch_to_wav2vec_features(x_audio, x_lens, target_T=target_T)  # [1, T, 768]
-        if self.model_name == "bidir_cross_transformer":
+
+        if self.model_name == "emotion_conditioned_transformer":
+            text_emb = self.encode_text_prompt(text_prompt).expand(x_w2v.shape[0], -1)
+
+            if guidance_scale is not None and guidance_scale > 1.0:
+                uncond_emb = self.get_uncond_emb().expand(x_w2v.shape[0], -1)
+                predicted_flame = self.model.forward_cfg(
+                    x_w2v,
+                    x_flame_tensor,
+                    text_emb=text_emb,
+                    uncond_text_emb=uncond_emb,
+                    guidance_scale=guidance_scale,
+                ).squeeze(0).cpu().numpy()
+            else:
+                predicted_flame = self.model(
+                    x_w2v,
+                    x_flame_tensor,
+                    text_emb=text_emb,
+                    y_gt=None,
+                    tf_ratio=0.0,
+                ).squeeze(0).cpu().numpy()
+        elif self.model_name == "bidir_cross_transformer":
             predicted_flame = self.model(
                 x_w2v,
                 x_flame_tensor,
@@ -442,6 +545,8 @@ def run_pipeline(
     video_crf=18,
     render_frame_stride=1,
     render_panels=None,
+    text_prompt=None,
+    guidance_scale=None,
     timings=None,
 ):
     """
@@ -467,6 +572,8 @@ def run_pipeline(
     x_flame, y_flame, predicted_flame = predictor.predict(
         sample_path_flame=npz_path,
         sample_path_audio=wav_path,
+        text_prompt=text_prompt,
+        guidance_scale=guidance_scale,
     )
     timings["predict_sec"] = round(time.perf_counter() - t_predict, 2)
 
@@ -497,11 +604,35 @@ def run_pipeline(
 
 
 if __name__ == "__main__":
-    sample_path_flame = "samples/ex1.npz"
-    sample_path_audio = "samples/ex1.wav"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ListenControl local inference CLI")
+    parser.add_argument("--npz", default="samples/ex1.npz", help="Path to .npz file")
+    parser.add_argument("--wav", default="samples/ex1.wav", help="Path to .wav file")
+    parser.add_argument("--output", "-o", default="outputs/comparison_with_audio.mp4")
+    parser.add_argument("--model", default=None,
+                        help="Model name: bidir_cross_transformer, emotion_conditioned_transformer, 128, 256")
+    parser.add_argument("--weights", default=None, help="Path to .pt weights file")
+    parser.add_argument("--text-prompt", "-t", default=None,
+                        help="Emotion/control prompt (emo_transformer only)")
+    parser.add_argument("--guidance-scale", "-g", type=float, default=None,
+                        help="CFG guidance scale (emo_transformer only, try 3-7)")
+    parser.add_argument("--image-size", type=int, default=320)
+    parser.add_argument("--render-panels", nargs="*", default=None,
+                        help="Panels to render: input ground_truth predicted")
+    parser.add_argument("--fps", type=int, default=25)
+    args = parser.parse_args()
+
     video_path = run_pipeline(
-        npz_path=sample_path_flame,
-        wav_path=sample_path_audio,
-        output_path="outputs/comparison_with_audio.mp4",
+        npz_path=args.npz,
+        wav_path=args.wav,
+        output_path=args.output,
+        model_name=args.model,
+        weights_path=args.weights,
+        text_prompt=args.text_prompt,
+        guidance_scale=args.guidance_scale,
+        image_size=args.image_size,
+        render_panels=args.render_panels,
+        fps=args.fps,
     )
     print("saved_video:", str(video_path))

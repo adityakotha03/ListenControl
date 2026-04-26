@@ -1,6 +1,7 @@
 # GPU base: Python 3.11, CUDA 12.4, PyTorch 2.5
 # Build from runpod/ with: docker build -t listencontrol .
 # Required before build: weights/best_bidir_cross_transformer.pt, render/flame/*.pkl, render/flame/*.npy
+# Optional for pipeline 6: weights/best_emo_transformer.pt
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 # System deps: ffmpeg for audio merge, git for FLAME_PyTorch clone
@@ -29,7 +30,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git"
 
 # FLAME assets must exist in render/flame (generic_model.pkl, flame_static_embedding.pkl, flame_dynamic_embedding.npy)
-# Weights must exist in weights/best_bidir_cross_transformer.pt
+# Default weights must exist in weights/best_bidir_cross_transformer.pt
+# Pipeline 6 text-control weights should exist in weights/best_emo_transformer.pt when selected.
 # These are baked at build time via COPY above
 
 ENV PYTHONPATH=/app:/app/FLAME_PyTorch

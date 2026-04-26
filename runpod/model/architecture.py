@@ -292,3 +292,62 @@ class BidirCrossTransformer(nn.Module):
     def forward(self, x_w2v, x_flame, y_gt=None, tf_ratio=1.0):
         context = self.encode(x_w2v, x_flame)
         return self.decode_ar(context, y_gt=y_gt, tf_ratio=tf_ratio)
+
+
+class EmotionConditionedTransformer(BidirCrossTransformer):
+    """BidirCrossTransformer with CLIP text-conditioning via FiLM."""
+
+    def __init__(self, *args, clip_emb_matrix=None, clip_dim=512, emo_dim=64, **kwargs):
+        super().__init__(*args, **kwargs)
+        if clip_emb_matrix is not None:
+            self.register_buffer("clip_emb", clip_emb_matrix)
+            clip_dim = clip_emb_matrix.shape[-1]
+        self.emo_proj = nn.Sequential(
+            nn.Linear(clip_dim, emo_dim),
+            nn.GELU(),
+            nn.Linear(emo_dim, emo_dim),
+        )
+        self.film_gamma = nn.Linear(emo_dim, self.d_model)
+        self.film_beta = nn.Linear(emo_dim, self.d_model)
+
+    def _emo_features(self, emo_idx=None, text_emb=None):
+        if text_emb is not None:
+            return self.emo_proj(text_emb.to(self.film_gamma.weight.device))
+        if emo_idx is None:
+            raise ValueError("EmotionConditionedTransformer requires text_emb or emo_idx.")
+        if not hasattr(self, "clip_emb"):
+            raise ValueError("emo_idx inference requires a loaded clip_emb buffer.")
+        return self.emo_proj(self.clip_emb[emo_idx])
+
+    def _apply_film(self, context, emo_idx=None, text_emb=None):
+        """Apply FiLM modulation to encoder context."""
+        e = self._emo_features(emo_idx=emo_idx, text_emb=text_emb)
+        gamma = self.film_gamma(e).unsqueeze(1)
+        beta = self.film_beta(e).unsqueeze(1)
+        return context * (1.0 + gamma) + beta
+
+    def forward(self, x_w2v, x_flame, emo_idx=None, y_gt=None, tf_ratio=1.0, text_emb=None):
+        context = self.encode(x_w2v, x_flame)
+        context = self._apply_film(context, emo_idx=emo_idx, text_emb=text_emb)
+        return self.decode_ar(context, y_gt=y_gt, tf_ratio=tf_ratio)
+
+    @torch.no_grad()
+    def forward_cfg(self, x_w2v, x_flame, emo_idx=None, text_emb=None,
+                    uncond_text_emb=None, guidance_scale=3.0):
+        """Classifier-Free Guidance inference.
+
+        Runs the encoder once, then applies FiLM twice (conditioned +
+        unconditioned) and extrapolates:
+          y_guided = y_uncond + guidance_scale * (y_cond - y_uncond)
+        """
+        context = self.encode(x_w2v, x_flame)
+
+        ctx_cond = self._apply_film(context, emo_idx=emo_idx, text_emb=text_emb)
+        y_cond = self.decode_ar(ctx_cond, y_gt=None, tf_ratio=0.0)
+
+        if uncond_text_emb is None:
+            raise ValueError("forward_cfg requires uncond_text_emb (CLIP embedding for 'unknown emotion').")
+        ctx_uncond = self._apply_film(context, text_emb=uncond_text_emb)
+        y_uncond = self.decode_ar(ctx_uncond, y_gt=None, tf_ratio=0.0)
+
+        return y_uncond + guidance_scale * (y_cond - y_uncond)

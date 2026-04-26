@@ -14,11 +14,17 @@ import runpod
 
 
 DEFAULT_MODEL_NAME = "bidir_cross_transformer"
+DEFAULT_TEXT_PROMPT = "unknown emotion"
 
 DEFAULT_WEIGHTS_BY_MODEL = {
     "bidir_cross_transformer": "best_bidir_cross_transformer.pt",
+    "emotion_conditioned_transformer": "best_emo_transformer_v2.pt",
     "128": "best_model_dim_128_30.pt",
     "256": "best_model_dim_256_30.pt",
+}
+
+FALLBACK_WEIGHTS = {
+    "emotion_conditioned_transformer": "best_emo_transformer.pt",
 }
 
 
@@ -35,6 +41,15 @@ def _normalize_model_name(model_name=None, model_size=None) -> str:
         "bidircrosstransformer": "bidir_cross_transformer",
         "cross_transformer": "bidir_cross_transformer",
         "transformer": "bidir_cross_transformer",
+        "emotion_conditioned_transformer": "emotion_conditioned_transformer",
+        "emotion_transformer": "emotion_conditioned_transformer",
+        "emo_transformer": "emotion_conditioned_transformer",
+        "text_control_transformer": "emotion_conditioned_transformer",
+        "text_conditioned_transformer": "emotion_conditioned_transformer",
+        "p6": "emotion_conditioned_transformer",
+        "v5": "bidir_cross_transformer",
+        "v6": "emotion_conditioned_transformer",
+        "v6.1": "emotion_conditioned_transformer",
         "128": "128",
         "256": "256",
     }
@@ -60,7 +75,10 @@ def _resolve_weights_path(root: Path, model_name: str, explicit_weights_path=Non
         return Path(env_general)
 
     default_name = DEFAULT_WEIGHTS_BY_MODEL[model_name]
-    return root / "weights" / default_name
+    default_path = root / "weights" / default_name
+    if not default_path.exists() and model_name in FALLBACK_WEIGHTS:
+        return root / "weights" / FALLBACK_WEIGHTS[model_name]
+    return default_path
 
 
 def _validate_assets_on_startup():
@@ -174,6 +192,16 @@ def handler(event):
     video_crf = int(inp.get("video_crf", 18))
     render_frame_stride = int(inp.get("render_frame_stride", inp.get("frame_stride", 1)))
     render_panels = inp.get("render_panels", inp.get("panels"))
+    text_prompt = (
+        inp.get("text_prompt")
+        or inp.get("emotion_prompt")
+        or inp.get("control_text")
+        or inp.get("prompt")
+    )
+    if model_name == "emotion_conditioned_transformer":
+        text_prompt = str(text_prompt or DEFAULT_TEXT_PROMPT).strip() or DEFAULT_TEXT_PROMPT
+    guidance_scale_raw = inp.get("guidance_scale", inp.get("cfg_scale"))
+    guidance_scale = float(guidance_scale_raw) if guidance_scale_raw is not None else None
 
     region = os.environ.get("REGION_S3", "us-east-1")
     access_key = os.environ.get("ACCESS_KEY_ID_S3")
@@ -232,6 +260,8 @@ def handler(event):
             video_crf=video_crf,
             render_frame_stride=render_frame_stride,
             render_panels=normalized_render_panels,
+            text_prompt=text_prompt,
+            guidance_scale=guidance_scale,
             timings=timings,
         )
         timings["pipeline_sec"] = round(time.perf_counter() - t1, 2)
@@ -255,6 +285,8 @@ def handler(event):
             "video_crf": video_crf,
             "render_frame_stride": render_frame_stride,
             "render_panels": list(normalized_render_panels),
+            "text_prompt": text_prompt,
+            "guidance_scale": guidance_scale,
             "duration_sec": total,
             "timings": timings,
             "used_device": used_device,
