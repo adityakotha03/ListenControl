@@ -34,6 +34,8 @@ cd runpod
 pip install -r requirements.txt
 ```
 
+The runtime must use PyTorch `>=2.6`. Newer `transformers` releases block `torch.load` on older PyTorch builds because of CVE-2025-32434; rebuild the Docker image if you see that error.
+
 PyTorch3D is needed for rendering. On RunPod with CUDA:
 ```bash
 pip install pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt221/download.html
@@ -288,3 +290,4 @@ Place these in `runpod/weights/`:
 - Omitting `text_prompt` on v6.1 uses `"unknown emotion"`; set `text_conditioning: false` for no text/FiLM modulation.
 - CFG runs the decoder twice (conditioned + unconditioned) and extrapolates: `y = y_uncond + scale * (y_cond - y_uncond)`.
 - If `best_emo_transformer_v2.pt` is missing, the code automatically falls back to `best_emo_transformer.pt`.
+- The Docker image uses `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel` to avoid the `torch.load` CVE guard in `transformers`.

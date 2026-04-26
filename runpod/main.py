@@ -33,6 +33,13 @@ FALLBACK_WEIGHTS = {
 DEFAULT_RENDER_PANELS = ("input", "ground_truth", "predicted")
 
 
+def load_torch_checkpoint(weights_path, device):
+    try:
+        return torch.load(str(weights_path), map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(str(weights_path), map_location=device)
+
+
 def normalize_model_name(model_name=None, model_size=None):
     value = model_name if model_name is not None else model_size
     if value is None:
@@ -175,7 +182,7 @@ class ListenControlPredictor:
         else:
             self.model = ListenControl128(flame_in_dim=56, out_dim=56).to(self.device)
 
-        checkpoint = torch.load(str(weights_path), map_location=self.device)
+        checkpoint = load_torch_checkpoint(weights_path, self.device)
         state_dict = checkpoint
         if isinstance(checkpoint, dict):
             state_dict = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))

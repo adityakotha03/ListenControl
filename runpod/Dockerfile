@@ -1,8 +1,8 @@
-# GPU base: Python 3.11, CUDA 12.4, PyTorch 2.5
+# GPU base: Python 3.11, CUDA 12.4, PyTorch 2.6+
 # Build from runpod/ with: docker build -t listencontrol .
 # Required before build: weights/best_bidir_cross_transformer.pt, render/flame/*.pkl, render/flame/*.npy
 # Optional for pipeline 6: weights/best_emo_transformer.pt
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 
 # System deps: ffmpeg for audio merge, git for FLAME_PyTorch clone
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,6 +25,7 @@ COPY weights/ /app/weights/
 
 # Install Python deps (torch/torchaudio already in base)
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "import torch; from packaging.version import parse; assert parse(torch.__version__.split('+')[0]) >= parse('2.6.0'), torch.__version__"
 
 # Install pytorch3d with GPU support (must match base torch/CUDA)
 RUN pip install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git"
