@@ -18,6 +18,8 @@ from render.render_pipeline import FlameRenderPipeline
 
 DEFAULT_MODEL_NAME = "bidir_cross_transformer"
 DEFAULT_TEXT_PROMPT = "unknown emotion"
+FLAME_VECTOR_DIM = 56
+DEFAULT_TARGET_FRAMES = 200
 
 DEFAULT_WEIGHTS_BY_MODEL = {
     "bidir_cross_transformer": Path("weights/best_bidir_cross_transformer.pt"),
@@ -110,6 +112,88 @@ def normalize_render_panels(render_panels=None):
     if not panels:
         raise ValueError("render_panels must include at least one panel.")
     return tuple(panels)
+
+
+def normalize_flame_mode(flame_mode=None):
+    value = str(flame_mode or "auto").strip().lower()
+    aliases = {
+        "auto": "auto",
+        "strict": "strict",
+        "required": "strict",
+        "require": "strict",
+        "zeros": "zeros",
+        "zero": "zeros",
+        "none": "zeros",
+        "missing": "zeros",
+        "audio_only": "zeros",
+        "audio-only": "zeros",
+        "no_flame": "zeros",
+        "no-flame": "zeros",
+    }
+    if value not in aliases:
+        allowed = "', '".join(["auto", "strict", "zeros"])
+        raise ValueError(f"Invalid flame_mode={flame_mode}. Use one of: '{allowed}'.")
+    return aliases[value]
+
+
+def _validate_target_frames(target_frames=None):
+    if target_frames is None:
+        return DEFAULT_TARGET_FRAMES
+    target_frames = int(target_frames)
+    if target_frames < 1 or target_frames > DEFAULT_TARGET_FRAMES:
+        raise ValueError(
+            f"target_frames must be between 1 and {DEFAULT_TARGET_FRAMES}; "
+            "the current transformer checkpoints were trained with max_len=200."
+        )
+    return target_frames
+
+
+def _as_flame_sequence(name, value):
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim != 2 or arr.shape[1] != FLAME_VECTOR_DIM:
+        raise ValueError(f"{name} must have shape [T, {FLAME_VECTOR_DIM}], got {arr.shape}.")
+    return arr
+
+
+def _zero_flame_sequence(num_frames):
+    return np.zeros((int(num_frames), FLAME_VECTOR_DIM), dtype=np.float32)
+
+
+def load_flame_sequences(sample_path_flame=None, target_frames=None, flame_mode="auto"):
+    """Load FLAME conditioning/target arrays, or create zero input for audio-only inference."""
+    mode = normalize_flame_mode(flame_mode)
+    fallback_frames = _validate_target_frames(target_frames)
+
+    if sample_path_flame is None:
+        if mode == "strict":
+            raise ValueError("input_npz_uri/--npz is required when flame_mode='strict'.")
+        x_flame = _zero_flame_sequence(fallback_frames)
+        return x_flame, x_flame.copy()
+
+    sample_path_flame = Path(sample_path_flame)
+    if not sample_path_flame.exists():
+        raise FileNotFoundError(f"FLAME npz not found: {sample_path_flame}")
+
+    x_flame = None
+    y_flame = None
+    with np.load(sample_path_flame) as data:
+        if "x_flame" in data:
+            x_flame = _as_flame_sequence("x_flame", data["x_flame"])
+        if "y_flame" in data:
+            y_flame = _as_flame_sequence("y_flame", data["y_flame"])
+
+    if x_flame is None:
+        if mode == "strict":
+            raise KeyError(f"{sample_path_flame} is missing required key 'x_flame'.")
+        frame_count = y_flame.shape[0] if y_flame is not None else fallback_frames
+        x_flame = _zero_flame_sequence(frame_count)
+
+    if y_flame is None:
+        y_flame = _zero_flame_sequence(x_flame.shape[0])
+
+    return x_flame, y_flame
 
 
 class ListenControlPredictor:
@@ -247,24 +331,31 @@ class ListenControlPredictor:
 
     @torch.no_grad()
     def predict(self, sample_path_flame, sample_path_audio, text_prompt=None,
-                guidance_scale=None, text_conditioning=True):
+                guidance_scale=None, text_conditioning=True, flame_mode="auto",
+                target_frames=None):
         """
         Args:
-            sample_path_flame: Path to .npz containing x_flame and y_flame.
+            sample_path_flame: Path to .npz containing x_flame and y_flame, or
+                None for audio-only inference with zero FLAME conditioning.
             sample_path_audio: Path to .wav audio.
             text_prompt: Optional free-form emotion/control prompt for pipeline 6.
             guidance_scale: If > 1.0, uses Classifier-Free Guidance to amplify
                 the emotion signal. Recommended: 3.0-7.0.
             text_conditioning: If False for pipeline 6, bypasses FiLM text modulation.
+            flame_mode: "auto"/"zeros" allows missing FLAME by using zeros;
+                "strict" requires x_flame in the NPZ.
+            target_frames: Number of output frames when no FLAME sequence is provided.
         Returns:
             x_flame, y_flame, predicted_flame (all numpy arrays with shape [T, 56]).
         """
-        sample_path_flame = Path(sample_path_flame)
+        sample_path_flame = Path(sample_path_flame) if sample_path_flame is not None else None
         sample_path_audio = Path(sample_path_audio)
 
-        data = np.load(sample_path_flame)
-        x_flame = data["x_flame"].astype(np.float32)
-        y_flame = data["y_flame"].astype(np.float32)
+        x_flame, y_flame = load_flame_sequences(
+            sample_path_flame=sample_path_flame,
+            target_frames=target_frames,
+            flame_mode=flame_mode,
+        )
 
         x_flame_tensor = torch.from_numpy(x_flame).unsqueeze(0).to(self.device)  # [1, T, 56]
 
@@ -273,6 +364,11 @@ class ListenControlPredictor:
         x_lens = torch.tensor([x_audio.shape[1]], device=self.device, dtype=torch.long)
 
         target_T = x_flame_tensor.shape[1]
+        if hasattr(self.model, "pos_emb") and target_T > self.model.pos_emb.shape[1]:
+            raise ValueError(
+                f"target sequence has {target_T} frames, but this checkpoint supports "
+                f"at most {self.model.pos_emb.shape[1]} frames."
+            )
         x_w2v = self.batch_to_wav2vec_features(x_audio, x_lens, target_T=target_T)  # [1, T, 768]
 
         if self.model_name == "emotion_conditioned_transformer":
@@ -565,13 +661,15 @@ def run_pipeline(
     text_prompt=None,
     guidance_scale=None,
     text_conditioning=True,
+    flame_mode="auto",
+    target_frames=None,
     timings=None,
 ):
     """
     Single entrypoint for serverless: predict + render comparison video.
     Returns path to final MP4 (with audio if ffmpeg available).
     """
-    npz_path = Path(npz_path)
+    npz_path = Path(npz_path) if npz_path is not None else None
     wav_path = Path(wav_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -593,15 +691,20 @@ def run_pipeline(
         text_prompt=text_prompt,
         guidance_scale=guidance_scale,
         text_conditioning=text_conditioning,
+        flame_mode=flame_mode,
+        target_frames=target_frames,
     )
     timings["predict_sec"] = round(time.perf_counter() - t_predict, 2)
 
     shape_params = None
-    with np.load(npz_path) as data:
-        if "shape" in data:
-            shape_params = data["shape"][0]
+    if npz_path is not None and npz_path.exists():
+        with np.load(npz_path) as data:
+            if "shape" in data:
+                shape_params = data["shape"][0]
 
     t_render = time.perf_counter()
+    if npz_path is None and render_panels is None:
+        render_panels = ("predicted",)
     video_path = save_comparison_video_with_audio(
         x_flame=x_flame,
         y_flame=y_flame,
@@ -638,14 +741,22 @@ if __name__ == "__main__":
                         help="CFG guidance scale (emo_transformer only, try 3-7)")
     parser.add_argument("--no-text-conditioning", action="store_true",
                         help="For v6/v6.1, bypass text/FiLM modulation.")
+    parser.add_argument("--no-flame", action="store_true",
+                        help="Run audio-only by feeding zero FLAME conditioning.")
+    parser.add_argument("--flame-mode", default="auto", choices=["auto", "strict", "zeros"],
+                        help="How to handle missing x_flame in the NPZ.")
+    parser.add_argument("--target-frames", type=int, default=None,
+                        help="Output frame count when --no-flame is used (default: 200).")
     parser.add_argument("--image-size", type=int, default=320)
     parser.add_argument("--render-panels", nargs="*", default=None,
                         help="Panels to render: input ground_truth predicted")
     parser.add_argument("--fps", type=int, default=25)
     args = parser.parse_args()
+    npz_path = None if args.no_flame else args.npz
+    flame_mode = "zeros" if args.no_flame else args.flame_mode
 
     video_path = run_pipeline(
-        npz_path=args.npz,
+        npz_path=npz_path,
         wav_path=args.wav,
         output_path=args.output,
         model_name=args.model,
@@ -653,6 +764,8 @@ if __name__ == "__main__":
         text_prompt=args.text_prompt,
         guidance_scale=args.guidance_scale,
         text_conditioning=not args.no_text_conditioning,
+        flame_mode=flame_mode,
+        target_frames=args.target_frames,
         image_size=args.image_size,
         render_panels=args.render_panels,
         fps=args.fps,

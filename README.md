@@ -93,6 +93,21 @@ python main.py \
   --no-text-conditioning
 ```
 
+Run v6.1 without an input FLAME sequence. This feeds zero FLAME conditioning to match the audio-only training path and renders the predicted panel:
+
+```bash
+python main.py \
+  --no-flame \
+  --wav samples/ex1.wav \
+  -o outputs/ex1_v61_audio_only.mp4 \
+  --model v6.1 \
+  --weights weights/best_emo_transformer_v2.pt \
+  --text-prompt "playful and cheerful speaker" \
+  --guidance-scale 5.0 \
+  --target-frames 200 \
+  --render-panels predicted
+```
+
 **Guidance scale tips:**
 - `1.0` or omitted: no amplification, raw model output
 - `3.0`: moderate emotion steering (good default)
@@ -140,11 +155,13 @@ python main.py --npz samples/ex1.npz --wav samples/ex1.wav -o outputs/hq.mp4 \
 
 Send a RunPod request with `input`:
 
-- `input_npz_uri` (**required**): `s3://...` or `https://...`
+- `input_npz_uri` (optional): `s3://...` or `https://...`; omit for audio-only zero-FLAME conditioning
 - `input_wav_uri` (**required**): `s3://...` or `https://...`
 - `output_s3_uri` (**required**): output destination (`s3://bucket/key.mp4`)
 - `model_name` (optional): see table above (default: `"bidir_cross_transformer"`)
 - `weights_path` (optional): custom weights path inside container
+- `flame_mode` (optional): `"auto"`, `"strict"`, or `"zeros"`; use `"zeros"` when no FLAME input is provided
+- `target_frames` (optional): output frame count for audio-only requests (default/max: `200`)
 - `text_prompt` (optional): free-form text control for `"emotion_conditioned_transformer"` (default: `"unknown emotion"`)
 - `text_conditioning` (optional): set `false` for v6.1 to bypass text/FiLM modulation
 - `guidance_scale` (optional): CFG scale for emotion amplification (default: none/disabled, try `3.0`-`7.0`)
@@ -212,6 +229,7 @@ Send a RunPod request with `input`:
     "input_wav_uri": "s3://listencontrol/ex1.wav",
     "output_s3_uri": "s3://listencontrol/outputs/result_happy_cfg.mp4",
     "model_name": "v6.1",
+    "weights_path": "weights/best_emo_transformer_v2.pt",
     "text_prompt": "playful and cheerful speaker",
     "guidance_scale": 5.0,
     "image_size": 320,
@@ -232,9 +250,32 @@ This uses the v6.1 checkpoint but bypasses text/FiLM conditioning. Do not includ
     "input_wav_uri": "s3://listencontrol/ex1.wav",
     "output_s3_uri": "s3://listencontrol/outputs/result_v61_no_text.mp4",
     "model_name": "v6.1",
+    "weights_path": "weights/best_emo_transformer_v2.pt",
     "text_conditioning": false,
     "image_size": 320,
     "render_panels": ["input", "ground_truth", "predicted"],
+    "video_crf": 18
+  }
+}
+```
+
+### Pipeline 6.1 audio-only request (no input FLAME)
+
+Omit `input_npz_uri` and set `flame_mode` to `"zeros"`. The handler uses a zero `[target_frames, 56]` FLAME input, zero shape params for rendering, and predicted-only rendering by default.
+
+```json
+{
+  "input": {
+    "input_wav_uri": "s3://listencontrol/ex1.wav",
+    "output_s3_uri": "s3://listencontrol/outputs/result_v61_audio_only.mp4",
+    "model_name": "v6.1",
+    "weights_path": "weights/best_emo_transformer_v2.pt",
+    "text_prompt": "playful and cheerful speaker",
+    "guidance_scale": 5.0,
+    "flame_mode": "zeros",
+    "target_frames": 200,
+    "image_size": 320,
+    "render_panels": ["predicted"],
     "video_crf": 18
   }
 }
@@ -251,6 +292,7 @@ Use this when full three-panel rendering needs more than the default RunPod exec
     "input_wav_uri": "s3://listencontrol/ex1.wav",
     "output_s3_uri": "s3://listencontrol/outputs/result_happy_cfg_timeout.mp4",
     "model_name": "v6.1",
+    "weights_path": "weights/best_emo_transformer_v2.pt",
     "text_prompt": "playful and cheerful speaker",
     "guidance_scale": 5.0,
     "image_size": 320,

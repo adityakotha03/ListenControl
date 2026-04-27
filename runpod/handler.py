@@ -15,6 +15,7 @@ import runpod
 
 DEFAULT_MODEL_NAME = "bidir_cross_transformer"
 DEFAULT_TEXT_PROMPT = "unknown emotion"
+DEFAULT_TARGET_FRAMES = 200
 
 DEFAULT_WEIGHTS_BY_MODEL = {
     "bidir_cross_transformer": "best_bidir_cross_transformer.pt",
@@ -191,10 +192,10 @@ def handler(event):
     input_wav_uri = inp.get("input_wav_uri") or inp.get("input_wav_s3_uri")
     output_uri = inp.get("output_s3_uri")
 
-    if not all([input_npz_uri, input_wav_uri, output_uri]):
+    if not all([input_wav_uri, output_uri]):
         return {
             "status": "error",
-            "error": "Missing required input: input_npz_uri, input_wav_uri, output_s3_uri",
+            "error": "Missing required input: input_wav_uri, output_s3_uri",
         }
 
     model_name = _normalize_model_name(
@@ -208,6 +209,13 @@ def handler(event):
     video_crf = int(inp.get("video_crf", 18))
     render_frame_stride = int(inp.get("render_frame_stride", inp.get("frame_stride", 1)))
     render_panels = inp.get("render_panels", inp.get("panels"))
+    flame_mode = str(inp.get("flame_mode", "auto")).strip().lower()
+    if not input_npz_uri:
+        flame_mode = "zeros"
+        if render_panels is None:
+            render_panels = ["predicted"]
+    target_frames_raw = inp.get("target_frames", inp.get("num_frames"))
+    target_frames = int(target_frames_raw) if target_frames_raw is not None else DEFAULT_TARGET_FRAMES
     text_prompt = (
         inp.get("text_prompt")
         or inp.get("emotion_prompt")
@@ -246,7 +254,7 @@ def handler(event):
     )
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"runpod_{job_id}_"))
-    npz_path = work_dir / "input.npz"
+    npz_path = work_dir / "input.npz" if input_npz_uri else None
     wav_path = work_dir / "input.wav"
     out_path = work_dir / "output.mp4"
 
@@ -263,7 +271,8 @@ def handler(event):
             )
 
         t0 = time.perf_counter()
-        _download_input(s3, input_npz_uri, npz_path)
+        if input_npz_uri:
+            _download_input(s3, input_npz_uri, npz_path)
         _download_input(s3, input_wav_uri, wav_path)
         timings["download_sec"] = round(time.perf_counter() - t0, 2)
         print(f"[{job_id}] Downloaded in {timings['download_sec']}s")
@@ -290,6 +299,8 @@ def handler(event):
             text_prompt=text_prompt,
             guidance_scale=guidance_scale,
             text_conditioning=text_conditioning,
+            flame_mode=flame_mode,
+            target_frames=target_frames,
             timings=timings,
         )
         timings["pipeline_sec"] = round(time.perf_counter() - t1, 2)
@@ -316,6 +327,8 @@ def handler(event):
             "text_prompt": text_prompt,
             "guidance_scale": guidance_scale,
             "text_conditioning": text_conditioning,
+            "flame_mode": flame_mode,
+            "target_frames": target_frames,
             "duration_sec": total,
             "timings": timings,
             "used_device": used_device,
